@@ -1,0 +1,105 @@
+/*
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/esp-now-esp32-arduino-ide/
+  
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+  
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*/
+
+#include <esp_now.h>
+#include <WiFi.h>
+
+// REPLACE WITH YOUR RECEIVER MAC Address
+uint8_t broadcastAddress[] = {0x08, 0x3A, 0xF2, 0xB7, 0xED, 0x9C};
+
+// Structure example to send data
+// Must match the receiver structure
+
+bool fwdIn;
+bool bckIn;
+
+typedef struct struct_message {
+  
+  int ctrlX;
+  bool fwd;
+  bool bck;
+  bool both;
+  bool turboA;
+  bool turboB;
+} struct_message;
+
+// Create a struct_message called myData
+struct_message myData;
+
+esp_now_peer_info_t peerInfo;
+
+// callback when data is sent
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  //Serial.print("\r\nLast Packet Send Status:\t");
+  //Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+ 
+void setup() {
+  // Init Serial Monitor
+  Serial.begin(115200);
+  pinMode(25, INPUT_PULLDOWN);
+  pinMode(26, INPUT_PULLDOWN);
+  pinMode(27, INPUT_PULLDOWN);
+  pinMode(33, INPUT_PULLDOWN);
+  pinMode(32, INPUT_PULLDOWN);
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Register peer
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+}
+ 
+void loop() {
+  myData.ctrlX = analogRead(32);
+  fwdIn = digitalRead(25);
+  bckIn = digitalRead(26);
+  myData.turboA = digitalRead(27);
+  myData.turboB = digitalRead(33);
+
+  if (fwdIn == true && bckIn == true){
+    fwdIn = false;
+    bckIn = false;
+    myData.both = true;
+  } else {
+    myData.both = false;
+  }
+
+  myData.fwd = fwdIn;
+  myData.bck = bckIn;
+
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+//   
+//  if (result == ESP_OK) {
+//    Serial.println("Sent with success");
+//  }
+//  else {
+//    Serial.println("Error sending the data");
+//  }
+  delay(25);
+}
