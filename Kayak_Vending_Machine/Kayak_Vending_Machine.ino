@@ -1,12 +1,68 @@
+#include <esp_now.h>
 #include <LiquidCrystal_I2C.h>
 #include <Key.h>
 #include <Keypad.h>
+#include <WiFi.h>
+
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// WIFI TRANSMITTING SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+// MAC Address of the motor-controlling ESP32
+uint8_t broadcastAddress[] = {0x2C, 0xBC, 0xBB, 0x4B, 0xF3, 0x40};
+
+// Structure containing the type of data sent to receiver ESP32
+typedef struct send_message {
+  bool shouldDispense;  //if false, should retrieve
+  int kayakNumber;      //which kayak slot (1-6) to operate on
+} send_message;
+
+// Variable to store the message values
+send_message sendData;
+
+// Variable to store info about receiver ESP32
+esp_now_peer_info_t peerInfo;
+
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// WIFI RECEIVING SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+// Structure to receive data must match the sender structure
+typedef struct receive_message {
+  //bool isGoodToGo;
+  bool isOperationCompleted;
+  int errorCode;
+} receive_message;
+
+// Create a receive_message called recvData
+receive_message recvData;
+
+// callback function that will be executed when data is received
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&recvData, incomingData, sizeof(recvData));
+  Serial.print("Bytes received: ");
+  Serial.println(len);
+  //Serial.print("Bool: ");
+  //Serial.println(recvData.isGoodToGo);
+  Serial.print("Bool: ");
+  Serial.println(recvData.isOperationCompleted);
+  Serial.print("Int: ");
+  Serial.println(recvData.errorCode);
+  Serial.println();
+}
+
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// LCD DISPLAY SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 // Set the correct I2C address and LCD dimensions
 const byte LCD_ROWS = 4;
 const byte LCD_COLS = 20;
-
 LiquidCrystal_I2C lcd(0x27, LCD_COLS, LCD_ROWS); // 0x27 is the default I2C address, change it if necessary
+
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// KEYPAD SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 // create keypad
 const byte ROWS = 4;
@@ -17,13 +73,13 @@ char keys[ROWS][COLS] = {
   {'7','8','9'},
   {'*','0','#'}
 };
-byte rowPins[ROWS] = {6, 5, 4, 3};
-byte colPins[COLS] = {9, 8, 7};
+byte rowPins[ROWS] = {26, 27, 14, 13};
+byte colPins[COLS] = {32, 33, 25};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // set pin numbers
-const int ledPin = 13;
-const int buttonPin = 12;
+const int ledPin = 19;
+const int buttonPin = 18;
 
 // initialize global variables
 bool isKayakFree[6] = {true,true,true,true,true,true};
@@ -49,18 +105,57 @@ byte previousMenu = 1;
 // ~~~~~~~ SETUP AND LOOP ~~~~~~~ //
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA); // Set device as a Wi-Fi Station
+
+  if (esp_now_init() != ESP_OK)
+  {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+  
+  // Register send and receive behavior
+  esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
+  // Register peer
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  // Add peer
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
+    Serial.println("Failed to add peer");
+    return;
+  }
+  
+  sendData.shouldDispense = true;
+  sendData.kayakNumber = 0;
+  
   pinMode(buttonPin, INPUT);
   pinMode(ledPin, OUTPUT);
   
   lcd.init();            // Initialize the LCD
   lcd.backlight();       // Turn on the backlight
-  showAvailableKayaks();
+  //showAvailableKayaks();
 }
 
 void loop() {
-  readKeypad();
-  readPaymentButton();
+  //readKeypad();
+  //readPaymentButton();
+
+  sendData.kayakNumber = sendData.kayakNumber + 1;
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &sendData, sizeof(sendData));
+  if (result == ESP_OK)
+  {
+    Serial.println("Sent with success");
+  }
+  else
+  {
+    Serial.println("Error sending the data");
+  }
+  delay(2000);
 }
 
 // ~~~~~~~ FUNCTIONS ~~~~~~~ //
@@ -503,7 +598,7 @@ void showRetrieving() {
   lcd.clear();
   lcd.print("Retrieving kayak...");
   
-  retrieveKayak();
+  retrieveKayak(kayakToRent);
 
   if (isReturnCorrect())
   {
@@ -519,7 +614,7 @@ void showRetrieving() {
   }
   else
   {
-    dispenseKayak();
+    dispenseKayak(kayakToRent);
     
     lcd.clear();
     lcd.print("Incorrect kayak");
@@ -541,7 +636,7 @@ void showDispensing() {
   lcd.clear();
   lcd.print("Dispensing kayak...");
   
-  dispenseKayak();
+  dispenseKayak(kayakToRent);
   
   freeKayaks -= 1;
   isKayakFree[kayakToRent - 1] = false;
@@ -601,13 +696,39 @@ void readPaymentButton() {
   }
 }
 
-void dispenseKayak() {
-  // placeholder for the vending machine dispensing kayak
-  // to the user after they "pay" to rent it
-  delay(1000);
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");  
 }
 
-void retrieveKayak() {
+void dispenseKayak(int kayakNum) {
+  recvData.isOperationCompleted = false;
+  sendData.shouldDispense = true;
+  sendData.kayakNumber = kayakNum;
+
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &sendData, sizeof(sendData));
+  if (result == ESP_OK)
+  {
+    Serial.println("Sent with success");
+  }
+  else
+  {
+    Serial.println("Error sending the data");
+  }
+
+  while(!recvData.isOperationCompleted) {
+    delay(100);
+  }
+
+  if (sendData.errorCode) {
+    Serial.println("error dispensing kayak");
+    return;
+  } else {
+    Serial.println("kayak dispensed successfully");
+  }
+}
+
+void retrieveKayak(int kayakNum) {
   // placeholder for the vending machine retrieving kayak
   // once user places it on the return tray and presses "0"
   delay(1000);

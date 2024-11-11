@@ -1,148 +1,204 @@
-/*
-  Rui Santos
-  Complete project details at https://RandomNerdTutorials.com/esp-now-esp32-arduino-ide/
-  
-  Permission is hereby granted, free of charge, to any person obtaining a copy
-  of this software and associated documentation files.
-  
-  The above copyright notice and this permission notice shall be included in all
-  copies or substantial portions of the Software.
-*/
-
 #include <esp_now.h>
 #include <WiFi.h>
 
-#define LEDC_CHANNEL_0     0
-#define LEDC_CHANNEL_1     1
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// WIFI TRANSMITTING SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-// use 13 bit precission for LEDC timer
-#define LEDC_TIMER_13_BIT  9
+// MAC Address of the UI/LCD ESP32
+uint8_t broadcastAddress[] = {0x08, 0xA6, 0xF7, 0xB0, 0xC8, 0xE8};
 
-// use 5000 Hz as a LEDC base frequency
-#define LEDC_BASE_FREQ     490
+// Structure containing the type of data sent to receiver ESP32
+typedef struct send_message {
+  //bool isGoodToGo;            //motor side ready to send/receive
+  bool isOperationCompleted;  //motors finished requested operation
+  int errorCode;              //0 = no errors. supports debugging
+} send_message;
 
-#define LED_PIN   27
-#define LED_PIN_2 25
+// Variable to store the message values
+send_message sendData;
 
-int cutoffDuty = 0;
-bool turboBool = false;
-float turboDiv = 6;
-float bckTurboDiv = turboDiv * 2.5;
+// Variable to store info about receiver ESP32
+esp_now_peer_info_t peerInfo;
 
-// Structure example to receive data
-// Must match the sender structure
-typedef struct struct_message {
-    int ctrlX;
-    //int ctrlY;
-    //bool propOn;
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+// WIFI RECEIVING SETUP
+// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    bool fwd;
-    bool bck;
-    bool both;
-    bool turboA;
-    bool turboB;
-    
-} struct_message;
+// Structure to receive data must match the sender structure
+typedef struct receive_message {
+    bool shouldDispense;
+    int kayakNumber;
+} receive_message;
 
-// Create a struct_message called myData
-struct_message myData;
+// Create a receive_message called recvData
+receive_message recvData;
 
 // callback function that will be executed when data is received
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&myData, incomingData, sizeof(myData));
-//  Serial.print(myData.ctrlX);
-//  Serial.print(" : ");
-//  Serial.print(myData.fwd);
-//  Serial.print(" : ");
-//  Serial.print(myData.bck);
-//  Serial.print(" : ");
-//  Serial.print(myData.turboA);
-//  Serial.print(" : ");
-//  Serial.println(myData.turboB);
+  memcpy(&recvData, incomingData, sizeof(recvData));
+  Serial.print("Bytes received: ");
+  Serial.println(len);
+  Serial.print("Bool: ");
+  Serial.println(recvData.shouldDispense);
+  Serial.print("Int: ");
+  Serial.println(recvData.kayakNumber);
+  Serial.println();
+
+  sendData.isOperationCompleted = false;
+  sendData.errorCode = 0;
+
+  if (shouldDispense) { // Kayak dispensing
+    switch(kayakNumber) {
+    case 1: {
+      dispenseKayakOne();
+      break;
+    } case 2: {
+      dispenseKayakTwo();
+      break;
+    } case 3: {
+      dispenseKayakThree();
+      break;
+    } case 4: {
+      dispenseKayakFour();
+      break;
+    } case 5: {
+      dispenseKayakFive();
+      break;
+    } case 6: {
+      dispenseKayakSix();
+      break;
+    } default: {
+      break;
+    }
+    }
+  } else { // Kayak retrieval
+    switch(kayakNumber) {
+    case 1: {
+      retrieveKayakOne();
+      break;
+    } case 2: {
+      retrieveKayakTwo();
+      break;
+    } case 3: {
+      retrieveKayakThree();
+      break;
+    } case 4: {
+      retrieveKayakFour();
+      break;
+    } case 5: {
+      retrieveKayakFive();
+      break;
+    } case 6: {
+      retrieveKayakSix();
+      break;
+    } default: {
+      break;
+    }
+    }
+  }
 }
  
 void setup() {
-  // Initialize Serial Monitor
   Serial.begin(115200);
-  
-  // Set device as a Wi-Fi Station
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(WIFI_STA); // Set device as a Wi-Fi Station
 
-  // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
 
-  ledcSetup(LEDC_CHANNEL_0, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
-  ledcAttachPin(LED_PIN, LEDC_CHANNEL_0);
-  
-  ledcSetup(LEDC_CHANNEL_1, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
-  ledcAttachPin(LED_PIN_2, LEDC_CHANNEL_1);
-  
-  // Once ESPNow is successfully Init, we will register for recv CB to
-  // get recv packer info
-  esp_now_register_recv_cb(OnDataRecv);
-  ledcWrite(0, 307);
-  ledcWrite(1, 307);
-  delay(10000);
+  // Register send and receive behavior
+  esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
+  // Register peer
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  // Add peer
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
+    Serial.println("Failed to add peer");
+    return;
+  }
+
+  sendData.isOperationCompleted = false;
+  sendData.errorCode = 0;
 }
- //*pow(((float(myData.ctrlX-2048))/float(3096)),3)
+ 
 void loop() {
-  if (myData.turboA == true){
-    if (myData.turboB == true){
-      turboDiv = 1;
-    } else {
-      turboDiv = 3;
-    }
-  } else if (myData.turboB == true){
-    
-  } else {
-    turboDiv = 6;
+  delay(2000);
+  sendData.errorCode = sendData.errorCode + 1;
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &sendData, sizeof(sendData));
+  if (result == ESP_OK)
+  {
+    Serial.println("Sent with success");
   }
-  int bckTurboDiv = turboDiv * 2.5;
+  else
+  {
+    Serial.println("Error sending the data");
+  }
+}
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");  
+}
+
+void dispenseKayakOne() {
+  sendData.isOperationCompleted = true;
+}
+
+void dispenseKayakTwo() {
+  sendData.isOperationCompleted = true;
+}
+
+void dispenseKayakThree() {
+  sendData.isOperationCompleted = true;
+}
+
+void dispenseKayakFour() {
+  sendData.isOperationCompleted = true;
+}
+
+void dispenseKayakFive() {
+  sendData.isOperationCompleted = true;
+}
+
+void dispenseKayakSix() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakOne() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakTwo() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakThree() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakFour() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakFive() {
+  sendData.isOperationCompleted = true;
+}
+
+void retrieveKayakSix() {
+  sendData.isOperationCompleted = true;
+}
+
+void retractMagnet() {
   
-  if(myData.fwd == 1){
-    if (myData.ctrlX > 2100){
-      cutoffDuty = ((myData.ctrlX-2048)*pow(((float(myData.ctrlX-2048))/float(1050)),3))/float(2.05078125);
-      if (cutoffDuty > 512) cutoffDuty = 512;
-      //Serial.println(cutoffDuty);
-      ledcWrite(0,307+(190/turboDiv));
-      ledcWrite(1,307+int((190-(cutoffDuty)*float(0.357421875))/turboDiv));
-    } else if (myData.ctrlX < 1700){
-      cutoffDuty = ((myData.ctrlX-400)*pow(((float(myData.ctrlX-400))/float(1200)),3))/float(2.783203125);
-      cutoffDuty = 512-cutoffDuty;
-    if (cutoffDuty < 0) cutoffDuty = 0;
-      ledcWrite(1,307+(190/turboDiv));
-      ledcWrite(0,307+int((190-(cutoffDuty)*float(0.357421875))/turboDiv));
-      //Serial.println(cutoffDuty);
-    } else {
-      cutoffDuty = 0;
-      ledcWrite(0,307+(190/turboDiv));
-      ledcWrite(1,307+(190/turboDiv));
-    }
-   } else if (myData.bck == 1){
-      if (myData.ctrlX > 2100){
-      cutoffDuty = ((myData.ctrlX-2048)*pow(((float(myData.ctrlX-2048))/float(1050)),3))/float(2.05078125);
-      if (cutoffDuty > 512) cutoffDuty = 512;
-      //Serial.println(cutoffDuty);
-      ledcWrite(0,307-(190/bckTurboDiv));
-      ledcWrite(1,307-int((190-(cutoffDuty)*float(0.357421875))/bckTurboDiv));
-    } else if (myData.ctrlX < 1700){
-      cutoffDuty = ((myData.ctrlX-400)*pow(((float(myData.ctrlX-400))/float(1200)),3))/float(2.783203125);
-      cutoffDuty = 512-cutoffDuty;
-    if (cutoffDuty < 0) cutoffDuty = 0;
-      ledcWrite(1,307-(190/bckTurboDiv));
-      ledcWrite(0,307-int((190-(cutoffDuty)*float(0.357421875))/bckTurboDiv));
-      //Serial.println(cutoffDuty);
-    } else {
-      cutoffDuty = 0;
-      ledcWrite(0,307-(190/bckTurboDiv));
-      ledcWrite(1,307-(190/bckTurboDiv));
-    }
-    } else {
-      ledcWrite(0,307);
-      ledcWrite(1,307);
-  }
-  delay(5);
+}
+
+void extendMagnet() {
+  
 }
