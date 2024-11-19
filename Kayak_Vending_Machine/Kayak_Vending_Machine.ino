@@ -138,14 +138,14 @@ void setup() {
   
   lcd.init();            // Initialize the LCD
   lcd.backlight();       // Turn on the backlight
-  //showAvailableKayaks();
+  showAvailableKayaks();
 }
 
 void loop() {
-  //readKeypad();
-  //readPaymentButton();
+  readKeypad();
+  readPaymentButton();
 
-  sendData.kayakNumber = sendData.kayakNumber + 1;
+  /*sendData.kayakNumber = sendData.kayakNumber + 1;
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &sendData, sizeof(sendData));
   if (result == ESP_OK)
   {
@@ -155,7 +155,7 @@ void loop() {
   {
     Serial.println("Error sending the data");
   }
-  delay(2000);
+  delay(2000);*/
 }
 
 // ~~~~~~~ FUNCTIONS ~~~~~~~ //
@@ -720,7 +720,7 @@ void dispenseKayak(int kayakNum) {
     delay(100);
   }
 
-  if (sendData.errorCode) {
+  if (recvData.errorCode) {
     Serial.println("error dispensing kayak");
     return;
   } else {
@@ -729,9 +729,30 @@ void dispenseKayak(int kayakNum) {
 }
 
 void retrieveKayak(int kayakNum) {
-  // placeholder for the vending machine retrieving kayak
-  // once user places it on the return tray and presses "0"
-  delay(1000);
+  recvData.isOperationCompleted = false;
+  sendData.shouldDispense = false;
+  sendData.kayakNumber = kayakNum;
+
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &sendData, sizeof(sendData));
+  if (result == ESP_OK)
+  {
+    Serial.println("Sent with success");
+  }
+  else
+  {
+    Serial.println("Error sending the data");
+  }
+
+  while(!recvData.isOperationCompleted) {
+    delay(100);
+  }
+
+  if (recvData.errorCode) {
+    Serial.println("error retrieving kayak");
+    return;
+  } else {
+    Serial.println("kayak retrieved successfully");
+  }
 }
 
 bool isReturnCorrect() {
